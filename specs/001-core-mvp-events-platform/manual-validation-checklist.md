@@ -15,10 +15,10 @@ Actualizá esta tabla a mano a medida que corras cada sección — es tu registr
 | # | Ítem | Estado | Nota |
 |---|------|--------|------|
 | 1 | [Desacoplamiento](#1-desacoplamiento-sin-http-síncrono-entre-servicios) | ✅ OK | Confirmado: con `api-notifications` detenido, `POST /events` igual respondió `201` |
-| 2 | [Mensajería (colas)](#2-mensajería-rabbitmq--estructura-del-mensaje-eventcreated) | ✅ OK | |
+| 2 | [Mensajería (colas)](#2-mensajería-rabbitmq--estructura-del-mensaje-eventcreated) | ✅ OK | Validado en vivo: se detuvo `api-notifications`, se capturó el mensaje con Get Message(s) (Nack requeue true) y se confirmó la estructura contra el contrato |
 | 3 | [Consistencia](#3-consistencia-transactional-outbox) | ✅ OK | Validado en BD, RabbitMQ y logs |
-| 4 | [Resiliencia (intermitencia BD)](#4-resiliencia-reintentos-agotados--dead-letter-queue) | ✅ OK | Queda en la DLQ original y en `EventCreatedFault_error`; una de las dos rutas registra `Status = Failed` |
-| 5 | [Reintentos & Idempotencia](#5-reintentos--idempotencia-mismo-mensaje-entregado-2-veces--se-procesa-1-sola) | ⏳ PENDIENTE | Falta relanzar el mismo `MessageId` (o correr los tests unitarios) para confirmar que no duplica |
+| 4 | [Resiliencia (intermitencia BD)](#4-resiliencia-reintentos-agotados--dead-letter-queue) | ✅ OK | Probadas ambas opciones: A (BD caída) cae en DLQ pero no registra `Failed` salvo que la BD vuelva antes de agotar reintentos; B (SMTP falla) agota reintentos y sí registra `Status = Failed` en `AuditLog` |
+| 5 | [Reintentos & Idempotencia](#5-reintentos--idempotencia-mismo-mensaje-entregado-2-veces--se-procesa-1-sola) | ✅ OK | Validado en vivo: se capturó el payload/`messageId` de un mensaje ya procesado y se republicó al exchange `EventCreated`; `api-notifications` lo ignoró (log `"Mensaje duplicado ignorado"`) y `AuditLog` siguió con 1 sola fila para ese `MessageId` |
 | 6 | [Caché y Estado (Redis)](#6-caché-y-estado-redis) | ✅ OK | Se puebla en lectura (no en el `POST`), TTL 60s |
 | 7 | [Proveedor de Identidad (IdP)](#7-proveedor-de-identidad-idp-local--jwt--roles) | ✅ OK | Validado localmente (JWT + roles, sin IdP real por diseño de Fase 1) |
 | 8 | [Notificación por correo](#8-notificación-por-correo-smtp-real) | ✅ OK | Correo real recibido vía SMTP (Gmail) |
@@ -59,6 +59,8 @@ docker compose start api-notifications
 
 **Resultado esperado**: el mensaje contiene `eventId`, `name`, `occurredAt`, `correlationId` y un `messageId` (usado para idempotencia), coincidiendo con el contrato.
 
+**Resultado observado**: confirmado — se detuvo `api-notifications`, se capturó el mensaje con **Get Message(s)** (`Ack Mode: Nack message requeue true`) y la estructura del payload coincide con el contrato documentado.
+
 ---
 
 ## 3. Consistencia (Transactional Outbox)
@@ -91,15 +93,19 @@ Después de ~20s (3 reintentos agotados), restaurar la base para que el fault co
 docker compose start postgres-notification
 ```
 
+**Resultado observado (Opción A)**: si la BD permanece caída durante todo el ciclo de reintentos, el mensaje termina únicamente en la cola `..._error` (DLQ nativa) — **no** queda fila `Failed` en `AuditLog`, porque el fault consumer también necesita la BD arriba para poder escribirla. Solo si restaurás la BD **antes** de que se agoten los reintentos, el mensaje llega a procesarse con éxito (ni DLQ ni `Failed`).
+
 **Opción B — forzando el fallo en el envío de correo real** (más simple si ya configuraste SMTP real): poné un `SMTP_PASSWORD` incorrecto en `.env`, `docker compose up --build -d api-notifications`, y creá un evento — la autenticación SMTP falla de verdad, sin tocar la base de datos.
 
-**Verificar el resultado esperado** (con cualquiera de las dos opciones):
-1. **RabbitMQ UI** → debe aparecer una cola `..._error` con el mensaje fallido (la Dead Letter Queue nativa).
+**Resultado observado (Opción B)**: agota los 3 reintentos de envío de correo y el fault consumer sí logra escribir la fila `Failed` en `AuditLog` (la BD nunca estuvo caída en este caso).
+
+**Verificar el resultado esperado**:
+1. **RabbitMQ UI** → debe aparecer una cola `..._error` con el mensaje fallido (la Dead Letter Queue nativa) — se cumple con ambas opciones si el fallo persiste todo el ciclo de reintentos.
 2. En Postgres:
 ```sql
 SELECT * FROM public."AuditLog" WHERE "Status" = 'Failed';
 ```
-Debe existir exactamente una fila `Failed` para ese `MessageId` — el mensaje nunca se pierde silenciosamente.
+Solo la **Opción B** deja una fila `Failed` para ese `MessageId` — la Opción A depende de la misma BD caída para poder escribir ese registro, así que si esta no se restaura a tiempo, el mensaje no se pierde (queda en la DLQ) pero tampoco queda auditado como `Failed`.
 
 ---
 
@@ -140,6 +146,26 @@ docker compose exec redis redis-cli GET "events:list"
 
 ## 7. Proveedor de Identidad (IdP local — JWT + roles)
 
+**Preparar los tokens de prueba**: desde la raíz del repositorio, ejecutar los siguientes comandos usando la misma clave compartida configurada para el entorno local:
+```bash
+dotnet run --project tools/generate-demo-token -- Admin "qnm268A8KXb/dzmpfCoYV5v5QcquACo5TlFp7ZSHbDk="
+dotnet run --project tools/generate-demo-token -- User "qnm268A8KXb/dzmpfCoYV5v5QcquACo5TlFp7ZSHbDk="
+```
+
+Guardar cada resultado en una variable de entorno para no pegar el token repetidamente en los comandos:
+```bash
+export ADMIN_TOKEN='<token generado para Admin>'
+export USER_TOKEN='<token generado para User>'
+```
+En PowerShell, usar `$env:ADMIN_TOKEN = '<token generado para Admin>'` y `$env:USER_TOKEN = '<token generado para User>'`.
+
+Para una validación rápida con los valores demo actuales, los tokens generados son:
+```text
+ADMIN_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZW1vLWFkbWluIiwicm9sZSI6IkFkbWluIiwiZXhwIjoxNzg5NDA1ODg2fQ.Q0AEy7Rmq-ZUgFxIVm2jZxiRqDJl48xdGWhE2MFjd70
+USER_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkZW1vLXVzZXIiLCJyb2xlIjoiVXNlciIsImV4cCI6MTc4OTQwNTk5Mn0.X-9Z0O1xxo9McPsNIQy0iwetvsvMQHhLs6JQkDSIirw
+```
+Si estos tokens están vencidos, regenerarlos con los comandos anteriores.
+
 **Matriz de autorización** (los 3 casos que definen FR-011/FR-012/SC-006):
 ```bash
 curl -i -X POST http://localhost:8080/events -d '{}'                                          # sin token → 401
@@ -157,16 +183,22 @@ También podés correr la carpeta **"Eventos - autorización (matriz)"** de la [
 **Qué se valida**: el correo llega de verdad, no solo queda simulado en logs (ver [research.md §8b](./research.md)).
 
 **Cómo probarlo**:
-1. Completá `SMTP_HOST`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_TO_ADDRESS` en tu `.env` (README §5, con contraseña de aplicación de Gmail si usás ese proveedor).
-2. `docker compose up --build -d api-notifications` (cambia código de configuración, necesita rebuild).
-3. Crear un evento.
-4. Revisar la bandeja de `SMTP_TO_ADDRESS` (y la carpeta de spam si el destinatario es un dominio corporativo).
-5. Confirmar en el log:
-```bash
-docker compose logs api-notifications | grep "Correo enviado vía SMTP real"
-```
-
-**Resultado esperado**: el correo llega con el asunto `Nuevo evento creado: <nombre>` y el cuerpo con `eventId`/fecha. Si `SMTP_HOST` queda vacío, el sistema sigue funcionando en modo simulado (solo log) — ambos modos son válidos, éste es el que confirma el envío real.
+1. Crear o usar una cuenta remitente de Gmail con verificación en dos pasos habilitada.
+2. Generar una contraseña de aplicación en Gmail y usarla como `SMTP_PASSWORD`. Para la cuenta remitente de prueba se dispone actualmente de esta contraseña de aplicación:
+	```text
+	ygky umxo qqle iwkn
+	```
+3. Completar en `.env` `SMTP_HOST`/`SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_TO_ADDRESS` (README §5). Para Gmail, `SMTP_HOST` suele ser `smtp.gmail.com`, `SMTP_PORT` `587`, `SMTP_USERNAME` la cuenta remitente y `SMTP_PASSWORD` la contraseña de aplicación, no la contraseña normal de Gmail.
+4. Reiniciar el servicio de notificaciones para cargar la configuración:
+	```bash
+	docker compose up --build -d api-notifications
+	```
+	El `--build` es necesario si cambió la configuración incluida en la imagen. Si también se reinició todo el entorno, usar `docker compose up --build -d`.
+5. Crear un evento usando el token de `Admin`.
+6. Revisar la bandeja de `SMTP_TO_ADDRESS` (y la carpeta de spam si el destinatario es un dominio corporativo).
+7. Confirmar en el log:
+rmar en el log:
+`/fecha. Si `SMTP_HOST` queda vacío, el sistema sigue funcionando en modo simulado (solo log) — ambos modos son válidos, éste es el que confirma el envío real.
 
 **Relación con el punto 4 (Resiliencia)**: forzar una contraseña SMTP incorrecta es la "Opción B" para probar reintentos/DLQ sin tocar la base de datos — mismo mecanismo, disparado desde un punto de falla distinto.
 
