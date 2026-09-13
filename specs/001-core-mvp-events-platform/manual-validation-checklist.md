@@ -197,6 +197,7 @@ También podés correr la carpeta **"Eventos - autorización (matriz)"** de la [
 5. Crear un evento usando el token de `Admin`.
 6. Revisar la bandeja de `SMTP_TO_ADDRESS` (y la carpeta de spam si el destinatario es un dominio corporativo).
 7. Confirmar en el log:
+
 rmar en el log:
 `/fecha. Si `SMTP_HOST` queda vacío, el sistema sigue funcionando en modo simulado (solo log) — ambos modos son válidos, éste es el que confirma el envío real.
 
