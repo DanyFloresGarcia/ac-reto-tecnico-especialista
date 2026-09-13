@@ -1,68 +1,77 @@
 # Arquitectura de Sistema — Visión Completa a 6 Meses
 
 **Audiencia**: equipo de ingeniería, arquitectura y stakeholders técnicos.
-**Alcance**: este documento describe la arquitectura objetivo del sistema **completo** de venta/gestión de eventos con alta concurrencia, pagos, emisión de tickets QR, check-in, búsqueda avanzada y notificaciones multicanal (secciones 1–2 del reto técnico), tal como lo exige el diseño a 6 meses. El código en `src/` implementa hoy únicamente la **Fase 1** de esta visión — `EventService` y `NotificationService` — y ese código **no se modifica** en este documento; se toma como línea base ya construida sobre la cual el resto del sistema se proyecta.
-
-**Fuentes de verdad**: `.specify/memory/constitution.md` (decisiones y restricciones ya fijadas para la Fase 1) y `specs/001-core-mvp-events-platform/` (spec, plan, contratos del MVP ya implementado).
+**Alcance**: arquitectura teórica de una plataforma de venta/gestión de eventos con alta concurrencia, pagos, tickets QR, check-in, búsqueda avanzada y notificaciones, para una primera versión productiva en 6 meses. Cubre la **arquitectura lógica** (§1–4, agnóstica de proveedor) y su **mapeo a AWS/híbrido** (§1.1). Para equipo, sprints y entornos ver [`roadmap.md`](./roadmap.md).
 
 ---
 
-## 1. Diagrama de Arquitectura (sistema completo a 6 meses)
+## 1. Diagrama de Arquitectura
 
 ```mermaid
 flowchart TB
-    classDef implemented fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#155724
-    classDef planned fill:#e2e3ff,stroke:#4c51bf,stroke-width:2px,color:#1e2260
     classDef external fill:#fff3cd,stroke:#d39e00,stroke-width:2px,color:#66512c
 
-    Web["Cliente Web<br/>(compra/reserva de tickets)"]:::planned --> GW
-    Staff["App de Staff<br/>(check-in en puerta)"]:::planned --> GW
+    Web["Cliente Web<br/>(compra/reserva de tickets)"] --> GW
+    Staff["App de Staff<br/>(check-in en puerta)"] --> GW
 
-    GW["API Gateway / BFF"]:::planned
-    GW <-->|"Valida JWT<br/>(OIDC/OAuth2)"| KC["Keycloak<br/>(Identity Provider)"]:::planned
+    GW["API Gateway / BFF"]
+    GW <-->|"Valida JWT<br/>(OIDC/OAuth2)"| KC["Keycloak<br/>(Identity Provider)"]
 
-    MQ{{"RabbitMQ<br/>(un solo broker, múltiples exchanges — MassTransit)"}}
+    MQ{{"Broker de Mensajería<br/>RabbitMQ + MassTransit<br/>— columna vertebral async de TODO el sistema"}}
 
-    subgraph Fase1["✅ FASE 1 — YA IMPLEMENTADO (src/, este repositorio)"]
+    Redis[("Redis — 3 usos, mismo clúster<br/>cache-aside · hold TTL · rate limiting")]
+
+    subgraph OBS["Observabilidad — transversal a TODOS los servicios"]
+        direction LR
+        OTEL["OpenTelemetry Collector"]
+        Tempo["Tempo (trazas)"]
+        Loki["Loki (logs)"]
+        Graf["Grafana (dashboards + alertas)"]
+        OTEL --> Tempo --> Graf
+        OTEL --> Loki --> Graf
+    end
+
+    subgraph DomEventos["Dominio de Eventos"]
         direction TB
-        ES["EventService"]:::implemented
-        NS["NotificationService"]:::implemented
-        ESDB[("Postgres<br/>eventdb")]:::implemented
-        NSDB[("Postgres<br/>notificationdb")]:::implemented
+        ES["EventService"]
+        NS["NotificationService"]
+        ESDB[("Postgres<br/>eventdb")]
+        NSDB[("Postgres<br/>notificationdb")]
         ES --> ESDB
-        ES -->|"Outbox transaccional"| MQ
-        MQ -->|"EventCreated"| NS
         NS --> NSDB
     end
+    ES -->|"Outbox transaccional"| MQ
+    ES -->|"Cache-Aside GET /events"| Redis
+    GW -->|"Rate limiting distribuido"| Redis
+    MQ -->|"EventCreated"| NS
 
-    subgraph FaseSearch["🔍 BÚSQUEDA AVANZADA — Planificado"]
-        SS["SearchService"]:::planned
-        SearchIdx[("OpenSearch / Elasticsearch<br/>índice de lectura")]:::planned
+    subgraph DomBusqueda["Búsqueda Avanzada"]
+        SS["SearchService"]
+        SearchIdx[("OpenSearch<br/>índice de lectura")]
         SS --> SearchIdx
     end
-    MQ -.->|"EventCreated<br/>(proyección asíncrona, CQRS)"| SS
+    MQ -.->|"EventCreated<br/>(proyección async, CQRS)"| SS
 
-    subgraph FaseTicketing["🎟️ TICKETING, RESERVAS Y PAGOS — Planificado (Saga coreografiada)"]
+    subgraph DomTicketing["Ticketing, Reservas y Pagos — Saga coreografiada"]
         direction TB
-        TS["TicketingService"]:::planned
-        PS["PaymentService"]:::planned
-        Redis[("Redis<br/>hold de reserva (TTL)")]:::planned
-        TSDB[("Postgres<br/>ticketingdb")]:::planned
-        PSDB[("Postgres<br/>paymentdb")]:::planned
-        TS --> Redis
+        TS["TicketingService"]
+        PS["PaymentService"]
+        TSDB[("Postgres<br/>ticketingdb")]
+        PSDB[("Postgres<br/>paymentdb")]
         TS --> TSDB
         PS --> PSDB
     end
+    TS -->|"Hold de reserva (TTL)"| Redis
     TS -->|"1. ReservationHeld"| MQ
     MQ -->|"2."| PS
-    PS <-->|"3. Cobro tokenizado (HTTPS)"| PSP["PSP externo<br/>(Stripe / Culqi / MercadoPago)"]:::external
+    PS <-->|"3. Cobro tokenizado (HTTPS)"| PSP["Niubiz<br/>(PSP externo)"]:::external
     PS -->|"4. PaymentApproved / PaymentFailed"| MQ
     MQ -->|"5."| TS
     TS -->|"6. TicketIssued (QR firmado)"| MQ
 
-    subgraph FaseCheckIn["🎫 CHECK-IN — Planificado"]
-        CS["CheckInService"]:::planned
-        CSLocal[("Cache local firmada<br/>(modo offline en el dispositivo de Staff)")]:::planned
+    subgraph DomCheckIn["Check-in"]
+        CS["CheckInService"]
+        CSLocal[("Cache local firmada<br/>modo offline en el dispositivo de Staff")]
         CS --> CSLocal
     end
     MQ -.->|"TicketIssued<br/>(réplica para validación offline)"| CS
@@ -73,15 +82,6 @@ flowchart TB
     GW -->|"HTTP sync"| TS
     GW -->|"HTTP sync"| CS
 
-    subgraph OBS["📊 OBSERVABILIDAD (Fase 2) — Planificado"]
-        direction LR
-        OTEL["OpenTelemetry Collector"]:::planned
-        Jaeger["Jaeger<br/>(trazas)"]:::planned
-        Loki["Loki<br/>(logs)"]:::planned
-        Grafana["Grafana<br/>(dashboards + alertas)"]:::planned
-        OTEL --> Jaeger --> Grafana
-        OTEL --> Loki --> Grafana
-    end
     ES -.->|"logs, trazas, métricas"| OTEL
     NS -.-> OTEL
     SS -.-> OTEL
@@ -90,151 +90,269 @@ flowchart TB
     CS -.-> OTEL
 ```
 
-**Cómo leer el diagrama**:
-- 🟩 **Verde = ya implementado**: `EventService`, `NotificationService`, `eventdb`, `notificationdb` y el broker RabbitMQ con el contrato `EventCreated` existen hoy en `src/` y funcionan de punta a punta (ver `specs/001-core-mvp-events-platform/`).
-- 🟦 **Azul = planificado**: todo lo demás (Gateway, Keycloak, `SearchService`, `TicketingService`, `PaymentService`, `CheckInService`, Observabilidad) es diseño a 6 meses, sin código todavía.
-- 🟨 **Amarillo = externo**: el PSP es un sistema de terceros fuera del control de este equipo.
-- Ningún microservicio llama a otro por HTTP — el único acoplamiento entre backends es RabbitMQ (regla no negociable heredada de la Fase 1, ver §4 y `constitution.md` §4).
-- `NotificationService` y `CheckInService` **no reciben tráfico de negocio del Gateway** en el caso de `NotificationService` (es puro consumidor); `CheckInService` sí expone HTTP para el escaneo interactivo de Staff, pero también consume eventos para poder operar sin conexión (ver §3.6).
+**Lectura rápida**: Niubiz (🟨) es el único sistema externo. El broker (hexágono central) es la columna vertebral async — ningún microservicio llama a otro por HTTP, solo a través de él (§4). `NotificationService` es puro consumidor; `CheckInService` combina HTTP (escaneo en puerta) y eventos (réplica offline).
+
+---
+
+## 1.1 Vista de Despliegue en AWS
+
+**Decisión**: cómputo, mensajería y datos en AWS; perímetro (DNS y WAF) con los proveedores ya estándar de la empresa (Cloudflare, F5); base de datos operada directamente por el Equipo de BD sobre EC2, no como servicio administrado. Es, por diseño, un despliegue **multi-proveedor/híbrido** — no "100% AWS" — sin que eso cambie la arquitectura lógica (§1).
+
+```mermaid
+flowchart TB
+    classDef aws fill:#fff3cd,stroke:#d39e00,stroke-width:1px,color:#66512c
+    classDef svc fill:#d4edda,stroke:#28a745,stroke-width:1px,color:#155724
+    classDef hub fill:#e2e3ff,stroke:#4c51bf,stroke-width:3px,color:#1e2260
+    classDef vendor fill:#f8d7da,stroke:#dc3545,stroke-width:1px,color:#721c24
+
+    Users["Cliente Web / App Staff"] --> CFDNS["Cloudflare<br/>(DNS + FQDN)"]:::vendor
+    CFDNS --> F5WAF["F5<br/>(WAF perimetral — reglas OWASP Top 10)"]:::vendor
+    F5WAF --> ALB["Application Load Balancer<br/>(pública, TLS)"]:::aws
+    ALB --> GWsvc["BFF/Gateway<br/>(ECS Fargate)"]:::svc
+
+    subgraph VPC["VPC — Multi-AZ"]
+        direction TB
+        GWsvc
+        SVC["EventService · SearchService · TicketingService<br/>PaymentService · CheckInService · NotificationService<br/>(ECS Fargate, autoscaling)"]:::svc
+        MQ{{"Amazon MQ para RabbitMQ<br/>casi TODO el tráfico entre servicios pasa por acá"}}:::hub
+        GWsvc --> SVC
+        SVC <==> MQ
+        PGEC2[("PostgreSQL en EC2<br/>clúster propio — HA a cargo del Equipo de BD")]:::aws
+        EC[("ElastiCache for Redis")]:::aws
+        OS[("Amazon OpenSearch Service")]:::aws
+        SVC --> PGEC2
+        SVC --> EC
+        SVC --> OS
+    end
+
+    SVC -->|"email"| SES["Amazon SES"]:::aws
+    SVC -->|"push / SMS"| SNSch["Amazon SNS"]:::aws
+    SVC -->|"QR / tickets PDF"| S3[("Amazon S3")]:::aws
+    SVC -.->|"logs / métricas infra"| CW["CloudWatch"]:::aws
+    SVC -.->|"trazas / logs / métricas app"| OTELCol["OTel Collector → stack Grafana"]:::aws
+    CW --> Alarms["CloudWatch Alarms"]:::aws
+    Alarms --> SNSAlert["SNS Topic alertas"]:::aws
+    SNSAlert --> LambdaHook["Lambda delgada<br/>(adapta payload)"]:::aws
+    LambdaHook --> GChat["Google Chat<br/>(Google Workspace corporativo)"]:::aws
+    Secrets["Secrets Manager"]:::aws -.-> SVC
+    SF["Step Functions<br/>(compensaciones/reembolsos)"]:::aws -.-> SVC
+```
+
+**Mapeo componente → AWS**:
+
+| Componente | Servicio AWS | Por qué |
+|---|---|---|
+| API Gateway / BFF | ALB → BFF en ECS Fargate | JWT y rate limiting ya se resuelven en código .NET; Amazon API Gateway solo si aparecen integraciones B2B con usage plans. |
+| Cada microservicio | ECS Fargate, autoscaling por CPU y profundidad de cola | Sin servidores que parchear; menor costo operativo que un EKS propio para este equipo. |
+| Broker de mensajería | **Amazon MQ para RabbitMQ** — el componente más central, no uno más | Mantiene MassTransit (Outbox/DLQ/retry de fábrica, §6.3) sin reescribirlo contra SNS+SQS; AWS solo opera el broker. |
+| PostgreSQL por servicio | **EC2** (self-managed), no RDS | El Equipo de BD ya opera y prefiere administrar Postgres directamente (replicación/failover propios) en vez de un servicio administrado. |
+| OpenSearch | Amazon OpenSearch Service | Administrado, sin clúster propio. |
+| Redis | ElastiCache | Los 3 usos lógicos (§2) van en namespaces separados del mismo clúster. |
+| Auditoría centralizada | DynamoDB + export a S3/Glacier | Ver §6.9. |
+| Notificaciones | SES (email) + SNS (push/SMS) | Ver §6.8. |
+| Pasarela de pago | Niubiz (SaaS externo) | Único proveedor — ver §6.12. |
+| Tickets QR / comprobantes | S3 | URL firmada, nunca servido por el propio microservicio. |
+| Identidad | Keycloak self-hosted en ECS Fargate + Postgres propio (mismo clúster EC2) | No hay Keycloak administrado nativo en AWS. |
+| Observabilidad | CloudWatch (infra) + stack Grafana (app) | Ver §6.6. |
+| Alertas | CloudWatch Alarms → SNS → Lambda → Google Chat (infra); Grafana Alerting (SLOs de app) | Ver §6.7. |
+| Compensaciones/reembolsos | Step Functions | Ver §6.11. |
+| Secretos | Secrets Manager con rotación | Nada en variables de entorno ni en el repo. |
+| DNS / dominio | **Cloudflare** | FQDN y gestión de DNS — estándar ya adoptado por la empresa, fuera de Route 53. |
+| WAF perimetral | **F5** | Estándar de seguridad ya adoptado por la empresa; reglas alineadas a **OWASP Top 10** — ver §5. |
+
+**Detalle técnico** (proveedor · tecnología · puerto):
+
+| Componente | Proveedor | Tecnología | Puerto |
+|---|---|---|---|
+| API Gateway / BFF | AWS ECS Fargate | C#/.NET 10, ASP.NET Core (YARP) | 443 (ALB) → 8080 |
+| Keycloak | Self-hosted (ECS Fargate) | Keycloak 25.x (Quarkus) | 8080 / 8443 |
+| Broker de mensajería | Amazon MQ | RabbitMQ 3.13 + MassTransit 8.5.10 | 5672 / 15672 (UI) |
+| Base transaccional | EC2 (self-managed, Equipo de BD) | PostgreSQL 16 + Patroni/repmgr (HA) | 5432 |
+| Búsqueda | OpenSearch Service | OpenSearch 2.x | 9200 |
+| Caché / hold / rate limit | ElastiCache | Redis 7.x | 6379 |
+| DNS / dominio | Cloudflare | DNS + FQDN | 53 / 443 |
+| WAF perimetral | F5 | F5 Advanced WAF / BIG-IP, reglas OWASP Top 10 | 443 |
+| Auditoría | DynamoDB | — | API HTTPS |
+| Notificaciones | SES / SNS | — | API HTTPS |
+| Pasarela de pago | Niubiz (SaaS externo) | API REST de Niubiz (tokenización + autorización) | 443 saliente |
+| Observabilidad (app) | OSS en EKS o Grafana Cloud | OTel Collector + Tempo + Loki + Mimir + Grafana 11.x | 3000 / 3200 / 3100 / 9090 |
+| Observabilidad (infra) | CloudWatch | — | API HTTPS |
+| Compensaciones | Step Functions | — | API HTTPS |
+| Secretos | Secrets Manager | — | API HTTPS |
+
+**Variante híbrida adicional**: si además hace falta federar contra un Active Directory corporativo que no puede salir de la red interna, Keycloak se despliega on-prem y expone su endpoint OIDC vía VPN Site-to-Site/Direct Connect — el resto del cómputo no tiene hoy razón de negocio para salir de AWS.
 
 ---
 
 ## 2. Componentes y Servicios Empleados
 
-| Componente | Uso en el sistema | Justificación |
+| Componente | Uso | Por qué |
 |---|---|---|
-| **API Gateway / BFF** | Único punto de entrada HTTP para Cliente Web y App de Staff. Termina TLS, valida el JWT contra Keycloak, enruta a cada microservicio, y aplica rate limiting agregado (ver §5). | Con 4 servicios HTTP-facing (`EventService`, `SearchService`, `TicketingService`, `CheckInService`) en lugar de 1, centralizar TLS/CORS/rate-limiting perimetral evita duplicar esa configuración de seguridad en cada servicio y le da al cliente una única URL base estable aunque los servicios internos cambien. |
-| **Keycloak (Identity Provider)** | Emisor y validador real de tokens OIDC/OAuth2; fuente de verdad de usuarios y roles (`Cliente`, `Promotor`, `Admin`, `Staff`). | Reemplaza el JWT local sin emisor de la Fase 1 (Constitución §5.1/§5.2), sin exigir cambios en las policies de autorización ya escritas — solo cambia el validador de token. |
-| **RabbitMQ (Broker)** | Transporte único de comunicación entre backends, vía MassTransit. Un solo broker, múltiples exchanges/colas (uno por tipo de evento de integración). | Ya en producción en la Fase 1 con Outbox transaccional, reintentos y DLQ nativos — se reutiliza sin cambios de diseño para todos los eventos nuevos (`ReservationHeld`, `PaymentApproved`, `TicketIssued`, etc.). |
-| **PostgreSQL — una base por servicio** (`eventdb`, `notificationdb`, `ticketingdb`, `paymentdb`) | Persistencia transaccional (ACID) de cada dominio de escritura. | Mantiene el principio *Database per Service* ya adoptado en la Fase 1 (Constitución §7.3): ningún servicio comparte esquema ni motor con otro, y cada uno migra su propio schema de forma independiente. |
-| **OpenSearch / Elasticsearch (NoSQL — motor de búsqueda)** | Índice de solo lectura, alimentado por proyección asíncrona de eventos, que sirve la búsqueda avanzada de eventos (texto libre, filtros por categoría/fecha/ubicación/precio, relevancia). | **Por qué NoSQL y no Postgres para esto**: Postgres resuelve bien las transacciones de escritura del dominio `Event`, pero un motor de búsqueda de texto completo con *facetas*, *ranking* de relevancia y filtros combinados a alta concurrencia de lectura es un problema estructuralmente distinto — requiere índices invertidos, tokenización lingüística y agregaciones que Postgres solo soporta de forma parcial (`tsvector`) y sin el mismo desempeño ni capacidad de escalar horizontalmente el lado de lectura de forma independiente del lado de escritura. Usar un motor separado, alimentado por CQRS (proyección desde los mismos eventos de dominio), evita que la carga de búsqueda impacte el rendimiento transaccional de `EventService`. |
-| **Redis — 3 usos distintos, no intercambiables** | 1) **Cache-Aside** en `EventService` (ya implementado, Fase 1): acelera lecturas de `GET /events`. 2) **Hold temporal de reserva** en `TicketingService` (planificado): contador/lock distribuido con TTL para bloquear cupo durante el checkout sin comprometer aún la base transaccional. 3) **Rate limiting distribuido** en el API Gateway (planificado): contador compartido entre las múltiples instancias del Gateway, complementando (no reemplazando) el rate limiting nativo de .NET 10 que corre localmente en cada servicio. | Los tres usos comparten la tecnología pero resuelven problemas distintos: uno es una optimización de lectura, el segundo es una estructura de datos con semántica de expiración crítica para el negocio (evitar sobreventa), y el tercero es un contador compartido entre procesos — mezclar esas responsabilidades en una sola instancia/base lógica de Redis sería un error de diseño; se documentan como 3 usos explícitos y, en producción, como bases lógicas (`db`/prefijo de clave) separadas dentro del mismo clúster de Redis. |
-| **PSP externo** (Stripe / Culqi / MercadoPago, según mercado) | Procesa el cobro real; nuestro sistema nunca toca el número de tarjeta. | Ver §5 (cumplimiento de datos de pago). |
-| **Stack de Observabilidad** (OpenTelemetry, Jaeger, Loki, Grafana) | Recolecta logs/trazas/métricas de **todos** los servicios (implementados y planificados) hacia un único lugar de diagnóstico. | Ver `constitution.md` §6 — la Fase 1 ya sienta la base (`correlationId`, logs estructurados, health checks) que esta capa instrumenta sin rediseñarla. |
+| **API Gateway / BFF** | Único punto de entrada HTTP; termina TLS, valida JWT, enruta, aplica rate limiting agregado. | Evita duplicar TLS/CORS/rate-limiting en 4 servicios HTTP-facing distintos. |
+| **Keycloak** | Emisor/validador OIDC/OAuth2; fuente de verdad de usuarios y roles. | Policies de autorización agnósticas al proveedor de identidad. |
+| **Broker (RabbitMQ + MassTransit)** | Transporte único entre backends — el componente por el que pasa casi toda la comunicación interna. | Outbox, reintentos y DLQ de fábrica cubren todos los eventos con un solo diseño (§6.2/6.3). |
+| **PostgreSQL — una base por servicio** | Persistencia transaccional (ACID) por dominio. | *Database per Service*: nada de esquema compartido. |
+| **OpenSearch (NoSQL)** | Índice de solo lectura para búsqueda avanzada, alimentado por proyección async. | Postgres no rinde igual en texto completo + facetas + relevancia a alta concurrencia de lectura; separar el índice aísla esa carga del lado transaccional. |
+| **Redis — 3 usos, no intercambiables** | Cache-Aside (`EventService`), hold de reserva con TTL (`TicketingService`), rate limiting distribuido (Gateway). | Mismo motor, problemas distintos — se documentan y se aíslan como namespaces separados. |
+| **Niubiz** | Procesa el cobro; el sistema nunca toca el número de tarjeta. | Único proveedor — ver §6.12. |
+| **Stack de Observabilidad** | Logs/trazas/métricas de todos los servicios en un solo lugar. | Ver §6.6. |
+
+Detalle de proveedor/tecnología/puerto de cada pieza: tabla en §1.1.
 
 ---
 
 ## 3. Listado de Microservicios
 
-### 3.1 EventService — ✅ Ya implementado
+### 3.1 EventService
 
 | Atributo | Detalle |
 |---|---|
-| **Responsabilidad** | Dueño exclusivo del agregado `Event`/`Zone`. Única fuente de verdad de qué eventos existen y sus zonas de precio/capacidad. |
-| **Persistencia** | `eventdb` (Postgres), exclusiva. |
-| **Comunicación** | HTTP síncrono con el cliente (vía Gateway). Publica `EventCreated` de forma asíncrona (Outbox transaccional) — nunca llama a otro servicio por HTTP. |
-| **Estado** | Implementado y probado (39 pruebas automatizadas, ver `specs/001-core-mvp-events-platform/tasks.md`). |
+| Responsabilidad | Dueño del agregado `Event`/`Zone`. |
+| Persistencia | `eventdb` (Postgres), exclusiva. |
+| Comunicación | HTTP sync con el cliente; publica `EventCreated` async (Outbox). |
+| Tecnología | C#/.NET 10 — ASP.NET Core (Minimal APIs) + MassTransit |
+| Puerto | `8080` |
+| Hosting | ECS Fargate |
 
-### 3.2 NotificationService — ✅ Ya implementado
-
-| Atributo | Detalle |
-|---|---|
-| **Responsabilidad** | Reaccionar de forma idempotente y resiliente a eventos de dominio de otros servicios; hoy simula un correo ante `EventCreated`, a 6 meses es el canal multicanal (email/SMS/push) que reacciona también a `TicketIssued`. |
-| **Persistencia** | `notificationdb` (Postgres), tabla `AuditLog` como registro de auditoría de procesamiento. |
-| **Comunicación** | 100% asíncrona — consume mensajes de RabbitMQ, no expone HTTP de negocio. |
-| **Estado** | Implementado y probado. |
-
-### 3.3 SearchService — Planificado
+### 3.2 NotificationService
 
 | Atributo | Detalle |
 |---|---|
-| **Responsabilidad** | Servir la búsqueda avanzada de eventos publicados (texto libre, filtros, relevancia) sin tocar la base transaccional de `EventService`. |
-| **Motor de persistencia** | OpenSearch/Elasticsearch — ver justificación NoSQL en §2. No tiene base de datos transaccional propia: es una proyección de solo lectura, reconstruible desde el histórico de eventos si fuera necesario. |
-| **Comunicación** | Lectura vía HTTP síncrono (Gateway → `SearchService`). Escritura de su índice **solo** vía consumo asíncrono de eventos (`EventCreated` y, a futuro, eventos de disponibilidad) — nunca recibe un `POST` directo de un cliente. |
+| Responsabilidad | Reacciona idempotentemente a `EventCreated` y, a 6 meses, `TicketIssued` (email/SMS/push). |
+| Persistencia | `notificationdb`, tabla `AuditLog`. |
+| Comunicación | 100% async — consumidor puro, sin HTTP de negocio. |
+| Tecnología | C#/.NET 10 — Worker Service + MassTransit |
+| Puerto | Sin HTTP de negocio (`8081` solo health check) |
+| Hosting | ECS Fargate |
 
-### 3.4 TicketingService — Planificado
-
-| Atributo | Detalle |
-|---|---|
-| **Responsabilidad** | Gestionar reservas y tickets bajo alta concurrencia, garantizando que nunca se venda más capacidad de la disponible por zona (anti-sobreventa). Orquesta (por coreografía, no por orquestador central) el flujo reserva → pago → emisión. |
-| **Motor de persistencia** | Postgres (`ticketingdb`) para el estado durable de `Reservation`/`Ticket`; Redis como estructura auxiliar de corta vida para el hold de cupo (nunca como fuente de verdad — ver §6.4). |
-| **Comunicación** | HTTP síncrono para crear una reserva (el cliente espera confirmación inmediata del hold). Asíncrono (MassTransit) para todo lo que sigue: confirmar o liberar la reserva según el resultado del pago. |
-
-### 3.5 PaymentService — Planificado
+### 3.3 SearchService
 
 | Atributo | Detalle |
 |---|---|
-| **Responsabilidad** | Procesar el cobro contra el PSP externo y ser la única fuente de verdad de si un pago fue aprobado, rechazado o revertido. |
-| **Motor de persistencia** | Postgres (`paymentdb`) — registro transaccional de intentos de pago y su estado, con el identificador del PSP como referencia externa (nunca datos de tarjeta). |
-| **Comunicación** | HTTP síncrono hacia el PSP externo (server-to-server, con el SDK oficial del proveedor). Asíncrono (MassTransit) hacia/desde el resto del sistema: consume `ReservationHeld`, publica `PaymentApproved`/`PaymentFailed`. |
+| Responsabilidad | Búsqueda avanzada de eventos publicados sin tocar la base de `EventService`. |
+| Persistencia | OpenSearch — proyección de solo lectura, reconstruible. |
+| Comunicación | Lectura HTTP sync; escritura de índice solo vía eventos async. |
+| Tecnología | C#/.NET 10 — ASP.NET Core (Minimal APIs) + cliente OpenSearch + MassTransit |
+| Puerto | `8080` |
+| Hosting | ECS Fargate |
 
-### 3.6 CheckInService — Planificado
+### 3.4 TicketingService
 
 | Atributo | Detalle |
 |---|---|
-| **Responsabilidad** | Validar tickets QR en la puerta del evento, tanto online (contra el backend) como **offline** (sin conectividad en el recinto). |
-| **Motor de persistencia** | Postgres compartiendo el criterio de `ticketingdb` para el estado canónico (online); una cache local firmada criptográficamente en el dispositivo de Staff (descargada antes del evento) para el modo offline. |
-| **Comunicación** | HTTP síncrono para el escaneo interactivo cuando hay conectividad. Consume `TicketIssued` de forma asíncrona para mantener actualizada la réplica local que permite validar sin conexión — el único servicio de este diseño que combina ambos estilos de entrada de datos por una razón operativa real (el recinto de un evento masivo no siempre tiene buena señal). |
+| Responsabilidad | Reservas/tickets bajo alta concurrencia, anti-sobreventa; coreografía reserva → pago → emisión. |
+| Persistencia | `ticketingdb` (Postgres); Redis para el hold de cupo (nunca fuente de verdad, §6.4). |
+| Comunicación | HTTP sync para crear reserva; async para el resto. |
+| Tecnología | C#/.NET 10 — ASP.NET Core (Minimal APIs) + MassTransit + `StackExchange.Redis` |
+| Puerto | `8080` |
+| Hosting | ECS Fargate, autoscaling más agresivo (mayor pico de carga del sistema) |
+
+### 3.5 PaymentService
+
+| Atributo | Detalle |
+|---|---|
+| Responsabilidad | Cobra contra Niubiz; única fuente de verdad del estado del pago. |
+| Persistencia | `paymentdb` — número de operación/autorización de Niubiz como referencia externa (nunca datos de tarjeta) + tabla Inbox de callbacks recibidos (ver §6.13). |
+| Comunicación | HTTP sync hacia Niubiz (OAuth2 Client Credentials) para tokenización/autorización; expone además un **callback propio** para la confirmación async del pago (ver §6.13 — proceso crítico); async con el resto del sistema vía MassTransit. |
+| Tecnología | C#/.NET 10 — ASP.NET Core (Minimal APIs) + cliente HTTP para la API de Niubiz + MassTransit |
+| Puerto | `8080` |
+| Hosting | ECS Fargate |
+
+### 3.6 CheckInService
+
+| Atributo | Detalle |
+|---|---|
+| Responsabilidad | Valida tickets QR en puerta, online y **offline**. |
+| Persistencia | Postgres para estado canónico; cache local firmada en el dispositivo de Staff para offline. |
+| Comunicación | HTTP sync para el escaneo; consume `TicketIssued` async para mantener la réplica offline. |
+| Tecnología | C#/.NET 10 — ASP.NET Core (Minimal APIs) + MassTransit |
+| Puerto | `8080` |
+| Hosting | ECS Fargate |
 
 ---
 
 ## 4. Flujos: Síncrono (HTTP) vs. Asíncrono (Eventos)
 
-### 4.1 Flujo síncrono (HTTP) — Cliente/Staff ↔ Gateway ↔ un servicio
+**HTTP (síncrono)**: solo cuando quien llama necesita una respuesta inmediata para decidir su siguiente paso (crear una reserva, escanear un ticket). El Gateway solo enruta al servicio dueño del recurso — nunca un microservicio llama HTTP a otro.
 
-- **Cuándo se usa**: cuando quien llama necesita una respuesta inmediata para decidir su siguiente paso — crear una reserva y saber si hay cupo, o escanear un ticket y saber al instante si es válido.
-- **Regla de oro**: el Gateway solo enruta hacia el servicio dueño del recurso solicitado. **Nunca** un microservicio de negocio llama HTTP a otro microservicio de negocio — ni siquiera a través del Gateway.
+**Eventos (asíncrono, vía MassTransit)**: toda comunicación entre backends, sin excepción. Si `TicketingService` llamara HTTP a `PaymentService`, la venta de tickets quedaría atada a la disponibilidad de Niubiz en tiempo real.
 
-### 4.2 Flujo asíncrono (eventos, vía MassTransit) — siempre entre backends
+**Ejemplo de punta a punta — reserva → pago → ticket → notificación**:
 
-- **Cuándo se usa**: toda comunicación entre servicios backend, sin excepción. Es la misma regla no negociable de la Fase 1 (Constitución §4), extendida a los 4 servicios nuevos.
-- **Por qué se mantiene aunque el sistema crezca**: si `TicketingService` llamara por HTTP a `PaymentService` para cobrar, la disponibilidad de la venta de tickets quedaría atada a la disponibilidad del PSP y de `PaymentService` en tiempo real — exactamente el acoplamiento que este sistema evita desde la Fase 1.
+1. `POST /reservations` (HTTP) → `TicketingService` coloca **hold en Redis** (TTL) y responde `201` de inmediato.
+2. Publica `ReservationHeld` (async) → `PaymentService` cobra contra **Niubiz** (HTTP hacia el externo).
+3. `PaymentService` persiste el resultado y publica `PaymentApproved`/`PaymentFailed` (async).
+4. `TicketingService` consume ese evento: si aprobado, confirma con **concurrencia optimista** (§6.4) y publica `TicketIssued`; si falla o expira, libera el cupo.
+5. `TicketIssued` llega en paralelo a `NotificationService` (notifica al cliente) y `CheckInService` (actualiza su réplica offline).
 
-### 4.3 Ejemplo de punta a punta: reserva → pago → emisión de ticket → notificación
-
-1. **Cliente Web** → `POST /reservations` (HTTP sync, vía Gateway) → `TicketingService` valida cupo, coloca un **hold en Redis** (TTL, ej. 10 minutos) y responde `201` de inmediato — el cliente ya sabe que "apartó" su lugar.
-2. `TicketingService` publica `ReservationHeld` (async) → `PaymentService` lo consume y **inicia el cobro contra el PSP** (HTTP síncrono, pero hacia un sistema externo, no entre microservicios propios).
-3. `PaymentService` persiste el resultado en `paymentdb` y publica `PaymentApproved` o `PaymentFailed` (async).
-4. `TicketingService` consume ese evento:
-   - Si `PaymentApproved`: confirma la reserva (con **concurrencia optimista** contra `ticketingdb`, ver §6.4), genera el/los `Ticket` con QR firmado, y publica `TicketIssued`.
-   - Si `PaymentFailed` (o el hold expira sin pago): libera el cupo — el TTL de Redis es, además, la red de seguridad si el evento de fallo se perdiera.
-5. `TicketIssued` (async) llega en paralelo a **dos** consumidores independientes, cada uno sin saber del otro:
-   - `NotificationService`: envía la notificación multicanal con el ticket al cliente.
-   - `CheckInService`: actualiza su réplica local, para que ese ticket ya sea validable en la puerta del evento aunque el dispositivo de Staff pierda conectividad después.
-
-Ningún paso de este flujo requiere que el cliente mantenga la conexión HTTP abierta más allá del paso 1 — el resto ocurre de forma desacoplada, exactamente el mismo principio que ya opera en la Fase 1 entre `EventService` y `NotificationService`.
+Ningún paso requiere que el cliente mantenga la conexión abierta más allá del paso 1.
 
 ---
 
 ## 5. Notas de Seguridad
 
-| Control | Diseño a 6 meses |
+| Control | Diseño |
 |---|---|
-| **Autenticación** | JWT emitido y validado vía **Keycloak** (OIDC/OAuth2): Authorization Code para Cliente Web y App de Staff, Client Credentials para integraciones servicio-a-servicio si las hubiera. El Gateway valida el token una sola vez y lo reenvía; ningún microservicio vuelve a contactar a Keycloak por request. |
-| **Roles** | Cuatro roles en Keycloak, cada uno con un alcance claro de autorización: **Cliente** (compra/reserva tickets, ve únicamente sus propios tickets/reservas), **Promotor** (crea y gestiona únicamente los eventos que le pertenecen), **Admin** (control total de la plataforma), **Staff** (opera exclusivamente `CheckInService`; no ve datos de pago ni puede crear eventos). Las policies de autorización se siguen nombrando de forma agnóstica al proveedor, como ya se hizo en la Fase 1. |
-| **Rate limiting** | Dos capas, no una: **rate limiting nativo de .NET 10** (`AddRateLimiter`, ya implementado en `EventService`) corriendo localmente en cada servicio como defensa de base, **más** un rate limiting **distribuido en el Gateway** (contador compartido en Redis, por usuario autenticado y no solo por IP) para detectar abuso agregado entre múltiples instancias y múltiples endpoints. |
-| **Prevención de IDOR** | A diferencia de la Fase 1 (donde no aplicaba por no existir datos "por usuario"), en el sistema completo **sí existen** recursos con dueño: tickets/reservas de un Cliente, eventos de un Promotor. Regla de diseño no negociable: todo endpoint que devuelva o modifique un recurso con dueño debe validar que el `sub` del token coincida con el `ownerId` almacenado en el registro — nunca basta con que el token sea válido y el recurso exista. |
-| **Manejo seguro de errores** | Se extiende sin cambios el patrón ya implementado en la Fase 1: middleware/`IExceptionHandler` que traduce cualquier excepción no controlada a un `ProblemDetails` genérico, nunca con stack trace, mensaje de excepción real ni detalle de conexión a datos. |
-| **Cumplimiento de datos de pago** | **Tokenización delegada 100% al PSP**: el Frontend usa el SDK/Elements del PSP directamente en el navegador del cliente para tokenizar la tarjeta; nuestro backend (`PaymentService`) solo recibe y persiste el token/identificador de transacción que el PSP devuelve — **nunca** el número de tarjeta, CVV ni fecha de expiración pasan por nuestra infraestructura. Esto reduce el alcance de cumplimiento PCI-DSS de nuestro sistema al nivel más bajo (SAQ A/A-EP) en lugar de tener que certificar el manejo directo de datos de tarjeta (SAQ D). |
+| **Autenticación** | JWT vía Keycloak (OIDC/OAuth2): Authorization Code para Cliente/Staff, Client Credentials entre servicios si aplica. El Gateway valida una sola vez. |
+| **Login social (Google)** | Keycloak federa Google como IdP externo para el rol Cliente — sigue siendo Keycloak el único emisor del JWT. |
+| **Niubiz — llamadas salientes** | **OAuth 2.0 Client Credentials**: `PaymentService` obtiene un access token del authorization server de Niubiz (server-to-server, sin compartir ninguna contraseña) y lo usa como Bearer en cada llamada. `client_id`/`client_secret` en Secrets Manager, rotación manual. |
+| **Niubiz — callback entrante (confirmación de pago)** | Endpoint propio que compartimos con Niubiz, con validación de formato, firma/IP allowlist, idempotencia y persistencia Inbox — es el punto de entrada más sensible del sistema (dinero real). Detalle completo en §6.13. |
+| **Roles** | Cliente, Promotor, Admin, Staff — cada uno con alcance claro; policies agnósticas al proveedor de identidad. |
+| **Rate limiting** | Dos capas: nativo de .NET 10 (`AddRateLimiter`) por servicio + distribuido en Redis a nivel Gateway (por usuario, no solo IP). |
+| **Prevención de IDOR** | Todo endpoint que devuelva/modifique un recurso con dueño (ticket, reserva, evento) valida `sub` del token contra el `ownerId` — nunca basta con que el token sea válido. |
+| **Manejo de errores** | `IExceptionHandler` único por servicio → `ProblemDetails` genérico, sin stack trace ni detalle interno. |
+| **Cumplimiento de pago** | Tokenización 100% en el checkout de Niubiz; el backend solo persiste el número de operación/autorización. Reduce el alcance PCI-DSS a SAQ A. |
+| **Estándar de seguridad aplicativo** | **OWASP Top 10** como checklist de referencia: reglas del WAF (F5) mapeadas a sus categorías (Injection, Broken Access Control, Broken Auth, etc.) y revisión obligatoria en cada PR/release de Seguridad y QA. |
 
 ---
 
 ## 6. Sustentación de Decisiones Arquitectónicas
 
-### 6.1 Clean Architecture (+ DDD táctico básico)
+**6.1 Clean Architecture (+ DDD táctico básico)**: 4 capas concéntricas (`Domain` ← `Application` ← `Infrastructure` ← `Api`/`Worker`) en todos los servicios; cambiar PSP, broker o caché se resuelve en `Infrastructure` sin tocar el dominio. Sin patrones adicionales salvo que un requisito real los justifique.
 
-Cada servicio — implementado o planificado — sigue las mismas 4 capas concéntricas (`Domain` ← `Application` ← `Infrastructure` ← `Api`/`Worker`), ya validadas en `EventService`/`NotificationService`. La lógica de negocio no conoce el framework web, el ORM ni el broker, lo que permite que decisiones de infraestructura (cambiar de PSP, migrar de RabbitMQ a otro broker, reemplazar Redis) se resuelvan en la capa `Infrastructure` sin tocar `Domain` ni `Application`. Deliberadamente **no** se introducen patrones adicionales (Value Objects exhaustivos, Specification pattern, un bus de eventos de dominio interno) salvo que un requisito real los justifique — la complejidad se agrega cuando el problema la exige, no por anticipación.
+**6.2 Transactional Outbox**: obligatorio en todo servicio que publique eventos. Sin persistir el mensaje saliente en la misma transacción del cambio de estado, hay dos fallos posibles: publicar un evento de algo que no se confirmó, o confirmar algo que nadie notifica.
 
-### 6.2 Patrón Transactional Outbox
+**6.3 MassTransit**: misma versión y patrón en todo el sistema — reintentos, DLQ y Outbox son de la librería, no código propio. Se fija **8.5.10** (Apache 2.0): la v9 exige licencia comercial, incompatible con usar solo OSS/gratuito.
 
-Ya implementado en `EventService` (Fase 1) y **obligatorio en todo servicio que publique eventos** (`TicketingService`, `PaymentService`) por la misma razón: sin persistir el mensaje saliente en la misma transacción que el cambio de estado de negocio, existen exactamente dos fallos posibles — publicar un evento para un cambio que finalmente no se confirmó, o confirmar un cambio que nadie llega a notificar. El Outbox elimina esa ventana de inconsistencia por diseño.
+**6.4 Concurrencia optimista + hold TTL en Redis (anti-sobreventa)**: bloquear filas de Postgres durante todo el checkout (minutos) generaría contención inaceptable en una flash sale. El cupo se aparta primero en Redis (atómico, TTL, se auto-revierte) y solo se confirma en Postgres con concurrencia optimista tras `PaymentApproved` — Redis da throughput en el pico, Postgres da la garantía dura de "nunca vender de más".
 
-### 6.3 MassTransit como abstracción de mensajería
+**6.5 Saga coreografiada (Ticketing ↔ Payment)**: la reserva y el cobro viven en bases distintas, y Niubiz no puede participar en una transacción distribuida. Cada servicio reacciona a eventos del otro sin orquestador central — con solo 2 pasos (reservar → cobrar), un orquestador sería un componente y un punto de fallo de más. Si el flujo creciera (fraude, cupones, facturación), ahí sí valdría introducir uno.
 
-Se reutiliza en todos los servicios nuevos sin cambios de versión ni de patrón respecto a la Fase 1: reintentos, DLQ y el propio Outbox son funcionalidad de la librería, no código propio a mantener. **Nota de licenciamiento ya resuelta en la Fase 1** (y que aplica igual a todo servicio nuevo): se fija la versión en **8.5.10** (Apache 2.0) en todo el sistema, tras verificarse que MassTransit v9 introdujo un requisito de licencia comercial incompatible con la restricción de este proyecto de usar solo librerías OSS/gratuitas.
+**6.6 Observabilidad — CloudWatch + stack Grafana, no uno solo**: CloudWatch para lo que AWS ya expone gratis (ALB/EC2/ElastiCache/ECS); stack Grafana (OTel → Tempo/Loki/Mimir) para trazas distribuidas y dashboards de negocio, portable dado que el despliegue ya es multi-proveedor (§1.1). Reconstruir en Grafana lo que CloudWatch ya da gratis sería trabajo redundante.
 
-### 6.4 Control de concurrencia optimista + hold con TTL en Redis (anti-sobreventa)
+**6.7 Alertas — dos rutas, con Google Chat como destino**: CloudWatch Alarms → SNS → Lambda → **Google Chat** (Google Workspace corporativo) para infraestructura; Grafana Alerting (soporte nativo de Google Chat) para SLOs de negocio. Se necesita una Lambda intermedia porque AWS Chatbot solo integra nativamente con Slack/Teams, no con Google Chat. Dos rutas porque son audiencias distintas: Plataforma resuelve una alarma de CPU, Desarrollo resuelve una de tasa de pagos fallidos.
 
-**Problema**: bajo alta concurrencia (una venta de tickets tipo "flash sale", con miles de clientes intentando reservar el mismo cupo limitado en segundos), bloquear filas de Postgres durante todo el tiempo que un cliente tarda en pagar (que puede ser minutos) generaría contención masiva y throughput inaceptable.
+**6.8 Notificaciones — SES + SNS**: SES para email transaccional, SNS para push/SMS, ambos nativos de AWS. Se implementan detrás de la misma interfaz `IEmailSender`/`INotificationSender` de `NotificationService`, para poder sumar o cambiar de proveedor sin tocar el dominio.
 
-**Decisión**: el cupo se "aparta" primero con una operación **atómica y de corta duración** en Redis (decremento condicional con TTL) — rápida, no bloqueante para otros clientes, y que se auto-revierte sola si el cliente abandona el pago. Solo en el momento de la **confirmación definitiva** (tras `PaymentApproved`) se toca Postgres, con **concurrencia optimista** (un token de versión/`xmin` en la fila de disponibilidad) como red de seguridad final ante la — improbable pero posible — carrera entre dos confirmaciones casi simultáneas en el borde de expiración del TTL.
+**6.9 Auditoría centralizada — DynamoDB**: cada servicio ya audita su propia idempotencia en su propia base (ej. `notificationdb.AuditLog`), pero Seguridad necesita un rastro transversal (quién hizo qué, cuándo) sin acceso a cada base transaccional. DynamoDB encaja porque el patrón es append-only + lectura por clave, sin joins, y el esquema de cada evento varía por servicio de origen — forzarlo a una tabla relacional única sería peor. Retención larga vía export a S3.
 
-**Por qué esta combinación y no una sola técnica**: Redis solo, sin la verificación optimista final en Postgres, sería una fuente de verdad "blanda" (podría perder el hold por un fallo de infraestructura sin que nadie se entere). Postgres solo, sin el hold en Redis, obligaría a mantener transacciones abiertas durante todo el ciclo de pago. La combinación da alto throughput en el momento de mayor contención (el hold) sin sacrificar la garantía dura de "nunca vender de más" (la confirmación).
+**6.10 Cache-Aside en Redis, sin CDN de por medio**: Redis cachea la respuesta de un endpoint con invalidación explícita en escritura, resolviendo la carga repetida sobre Postgres (ej. `GET /events`). Se descarta una CDN (CloudFront): el volumen actual no justifica esa capa adicional de invalidación, y el catálogo de eventos cambia con la frecuencia suficiente para que aporte poco sobre lo que ya resuelve Redis. Si el tráfico público creciera con usuarios muy distribuidos geográficamente, Cloudflare (ya presente en el perímetro, §1.1) puede habilitar cacheo de borde sin sumar un proveedor más.
 
-### 6.5 Patrón Saga (coreografía de eventos) entre TicketingService y PaymentService
+**6.11 Alta disponibilidad vs. Step Functions**: la disponibilidad se resuelve con redundancia (Postgres en EC2 con replicación streaming + failover gestionado por el Equipo de BD, ElastiCache con réplicas, Amazon MQ activo-standby, ECS con 2+ tareas en 2+ AZ, autoscaling por cola) — nada de eso necesita Step Functions. Step Functions sirve para **orquestar compensaciones** (reembolsos, cancelación de evento con reversión multi-paso), donde sí hacen falta pasos, reintentos con backoff y esperas largas auditables. La Saga coreografiada de §6.5 sigue siendo correcta para el flujo feliz.
 
-**Problema**: la reserva de un ticket y el cobro de su pago viven en dos bases de datos distintas (`ticketingdb`, `paymentdb`), y el paso intermedio depende además de un sistema externo (el PSP) que **no puede participar** en ninguna transacción distribuida de nuestro sistema.
+**6.12 Un solo proveedor de pago — Niubiz**: mantener varios PSP a la vez multiplica integración, formatos de notificación y superficie de auditoría PCI, sin que el reto lo exija. Niubiz (ex-VisaNet, procesador líder en el mercado peruano): integración vía su API REST de tokenización + autorización, checkout propio que mantiene el número de tarjeta fuera de nuestra infraestructura (PCI SAQ A), y soporte directo de medios de pago y moneda locales.
 
-**Decisión**: en lugar de una transacción distribuida (2PC) — técnicamente inviable en cuanto el PSP entra en el flujo, y de por sí indeseable entre bases de datos que queremos mantener autónomas (Database per Service) — se modela el flujo como una **Saga coreografiada**: cada servicio reacciona a eventos publicados por el otro, sin un orquestador central que conozca el flujo completo. `TicketingService` no sabe cómo `PaymentService` cobra, ni `PaymentService` sabe qué hace `TicketingService` con el resultado — cada uno solo conoce el contrato del evento que consume y el que publica.
+**6.13 Procesamiento de pagos — el proceso más crítico del sistema**
 
-**Por qué coreografía y no un orquestador central**: con solo dos pasos (reservar → cobrar → confirmar/liberar), un orquestador central añadiría un componente adicional a mantener y un punto único de fallo para coordinar un flujo que los propios eventos ya coordinan de forma natural. Si el flujo creciera a muchos más pasos (por ejemplo, incorporando validaciones de fraude, cupones, facturación electrónica), la coreografía se volvería difícil de seguir y sería el momento correcto de introducir un orquestador (ej. una máquina de estados explícita) — una decisión que este documento deja señalada para revisarse si el flujo crece, no una que se toma preventivamente hoy.
+El cobro tiene dos puntos de entrada al sistema, no uno: la llamada saliente que inicia el pago (§4.3), y el **callback de confirmación** que Niubiz invoca sobre un endpoint que nosotros exponemos y les compartimos (`POST /payments/callbacks/niubiz`). Por ser un endpoint público, invocado por un tercero, con dinero real de por medio, es el que más blindaje necesita de todo el sistema:
+
+- **Autenticación saliente (OAuth 2.0)**: ver §5 — Client Credentials, sin contraseñas compartidas. Para el callback *entrante* la lógica es inversa: es Niubiz quien debe demostrarnos que es quien dice ser, no nosotros a ellos — por eso el callback no usa OAuth2, usa las capas de abajo.
+- **Validación de formato**: el callback se deserializa contra un contrato estricto (id de operación, estado, monto, moneda, timestamp); cualquier payload que no calce se rechaza con `400` antes de tocar lógica de negocio.
+- **Seguridad, en capas**: (1) solo HTTPS; (2) F5 restringe el origen a los rangos de IP que Niubiz publique para sus callbacks; (3) firma/secreto compartido específico de esta integración — **a confirmar con Niubiz en la integración técnica**, junto con su mecanismo real de notificación; (4) el monto/moneda del callback se contrastan contra lo ya registrado en `paymentdb` para esa operación — un callback que declare "aprobado" con un monto distinto al cobrado se rechaza, nunca se asume válido por venir de una IP conocida.
+- **Idempotencia**: mismo patrón que el consumidor idempotente de `NotificationService` — el id de operación de Niubiz es la clave, con **constraint único** en la tabla Inbox de `paymentdb`. Si el callback ya fue procesado, se responde `200` sin reprocesar ni republicar el evento — necesario porque el mismo callback puede llegar más de una vez (reintento del proveedor, reintento de red, doble clic del usuario).
+- **Persistencia (patrón Inbox)**: el callback crudo se persiste primero —junto con el constraint único— *antes* de cualquier efecto de negocio, simétrico al Outbox de publicación (§6.2). Así queda evidencia para reconciliar aunque el procesamiento posterior falle, y el `200` se responde apenas el registro es durable, no al final de la cadena de efectos.
+- **Reintentos, en dos direcciones**:
+  - *Niubiz → nosotros*: si el callback nunca llega, no hay que depender solo de él. Se agrega un **job de reconciliación** que consulta periódicamente el estado de todo pago que siga "pendiente" más allá de un umbral, contra el endpoint de consulta de Niubiz. **Pendiente de confirmar con Niubiz**: si reintentan el callback, con qué backoff y cuántas veces — hasta entonces se diseña asumiendo el peor caso (no reintentan).
+  - *Nosotros → el resto del sistema*: una vez procesado el callback, publicar `PaymentApproved`/`PaymentFailed` usa el Outbox + reintentos/DLQ de MassTransit ya establecidos (§6.2/6.3) — ninguna maquinaria nueva ahí.
+
+**6.14 Riesgo de doble check-in en modo offline (no se puede eliminar del todo)**
+
+**El problema real**: si dos puertas distintas (o dos dispositivos de Staff) están **ambas sin conexión** al mismo tiempo, cada una valida el mismo QR contra su propia "foto" local — ninguna sabe que la otra ya lo marcó como usado hasta que ambas vuelvan a sincronizar con el backend. Es decir: **si hay dos puertas sin señal a la vez, dos personas distintas pueden entrar con el mismo ticket**. Ningún diseño puramente offline puede evitar esto sin coordinación en tiempo real entre dispositivos — es el mismo trade-off de fondo que CAP: no se puede tener disponibilidad offline total y consistencia (un ticket, una entrada) garantizada al mismo tiempo, sin red.
+
+**Mitigaciones (reducen la ventana de riesgo, no la eliminan)**:
+- **Online siempre primero, con timeout corto** (1–2s): la validación en tiempo real contra el backend es la fuente de verdad real y detecta el duplicado al instante; el modo offline es el último recurso, no el camino por defecto — así la ventana de riesgo se reduce a cortes de red genuinos, no a wifi lento.
+- **Sincronización oportunista**: el dispositivo sincroniza apenas detecta cualquier señal, aunque sea intermitente — no espera una conexión estable, para propagar "usado" entre puertas lo antes posible.
+- **Reconciliación post-evento**: al sincronizar, el backend detecta si el mismo ticket fue marcado "usado" en más de un dispositivo y lo deja **marcado para revisión de Seguridad** — no previene la entrada duplicada, pero la hace visible y auditable.
+- **Partición de puertas** (operativo, no técnico): si el evento lo permite, asignar rangos/sectores de tickets distintos a cada puerta reduce la probabilidad de que el mismo ticket se presente en dos puertas a la vez.
+
+Esto queda documentado como **riesgo aceptado bajo corte total de conectividad**, no como un defecto a corregir con más código — la mitigación real, más allá de estas capas, es de infraestructura del recinto (mejor señal en el venue), no de arquitectura de software.
