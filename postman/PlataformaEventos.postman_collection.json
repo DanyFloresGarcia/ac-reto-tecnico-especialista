@@ -1,0 +1,345 @@
+{
+  "info": {
+    "name": "Plataforma de Eventos - Core MVP",
+    "description": "Colección para probar EventService/NotificationService directamente por API, sin pasar por el Frontend. Usar junto al environment 'Plataforma de Eventos - Local' (completar adminToken/userToken con tools/generate-demo-token). Ver specs/001-core-mvp-events-platform/quickstart.md para el recorrido completo, incluyendo idempotencia y resiliencia (que requieren manipular RabbitMQ directamente y no están cubiertos aquí).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "EventService - live",
+          "request": {
+            "method": "GET",
+            "url": "{{eventApiUrl}}/health/live"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "EventService - ready",
+          "request": {
+            "method": "GET",
+            "url": "{{eventApiUrl}}/health/ready"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK (todas las dependencias alcanzables)', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NotificationService - live",
+          "request": {
+            "method": "GET",
+            "url": "{{notificationApiUrl}}/health/live"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "NotificationService - ready",
+          "request": {
+            "method": "GET",
+            "url": "{{notificationApiUrl}}/health/ready"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK (todas las dependencias alcanzables)', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Eventos - camino feliz",
+      "item": [
+        {
+          "name": "POST /events (Admin, válido) -> 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Correlation-Id", "value": "{{$guid}}" }
+            ],
+            "url": "{{eventApiUrl}}/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Concierto Rock en el Parque\",\n  \"date\": \"2026-12-01T20:00:00Z\",\n  \"location\": \"Estadio Nacional, Lima\",\n  \"zones\": [\n    { \"name\": \"General\", \"price\": 50.00, \"capacity\": 500 },\n    { \"name\": \"VIP\", \"price\": 150.00, \"capacity\": 100 }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('201 Created', function () { pm.response.to.have.status(201); });",
+                  "pm.test('trae header Location', function () { pm.response.to.have.header('Location'); });",
+                  "const body = pm.response.json();",
+                  "pm.test('devuelve el evento creado en estado Draft', function () { pm.expect(body.status).to.eql('Draft'); });",
+                  "pm.environment.set('lastCreatedEventId', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events (Admin) -> 200, incluye el seed",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": "{{eventApiUrl}}/events"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('incluye el evento sembrado al arrancar', function () {",
+                  "  pm.expect(body.some(e => e.name === 'Concierto Rock en el Parque')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events (User) -> 200",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{userToken}}" }],
+            "url": "{{eventApiUrl}}/events"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK (User también puede leer)', function () { pm.response.to.have.status(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/{id} (existente) -> 200",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": "{{eventApiUrl}}/events/{{lastCreatedEventId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('200 OK', function () { pm.response.to.have.status(200); });",
+                  "pm.test('el id coincide con el creado', function () {",
+                  "  pm.expect(pm.response.json().id).to.eql(pm.environment.get('lastCreatedEventId'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events/{id} (inexistente) -> 404",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": "{{eventApiUrl}}/events/00000000-0000-0000-0000-000000000000"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('404 Not Found', function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Eventos - validación (400)",
+      "item": [
+        {
+          "name": "POST /events sin zonas -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{eventApiUrl}}/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Evento sin zonas\",\n  \"date\": \"2026-12-01T20:00:00Z\",\n  \"location\": \"Algún lugar\",\n  \"zones\": []\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('400 Bad Request', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events con zona capacidad 0 -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{eventApiUrl}}/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Evento con zona inválida\",\n  \"date\": \"2026-12-01T20:00:00Z\",\n  \"location\": \"Algún lugar\",\n  \"zones\": [ { \"name\": \"General\", \"price\": 10, \"capacity\": 0 } ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('400 Bad Request', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events con precio negativo -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{eventApiUrl}}/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Evento con precio inválido\",\n  \"date\": \"2026-12-01T20:00:00Z\",\n  \"location\": \"Algún lugar\",\n  \"zones\": [ { \"name\": \"General\", \"price\": -1, \"capacity\": 10 } ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('400 Bad Request', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Eventos - autorización (matriz)",
+      "item": [
+        {
+          "name": "POST /events sin token -> 401",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{eventApiUrl}}/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"x\",\n  \"date\": \"2026-01-01T00:00:00Z\",\n  \"location\": \"x\",\n  \"zones\": [ { \"name\": \"x\", \"price\": 1, \"capacity\": 1 } ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('401 Unauthorized', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /events sin token -> 401",
+          "request": {
+            "method": "GET",
+            "url": "{{eventApiUrl}}/events"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('401 Unauthorized', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events con rol User -> 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{userToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "url": "{{eventApiUrl}}/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"x\",\n  \"date\": \"2026-01-01T00:00:00Z\",\n  \"location\": \"x\",\n  \"zones\": [ { \"name\": \"x\", \"price\": 1, \"capacity\": 1 } ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('403 Forbidden (autenticado pero sin rol Admin)', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

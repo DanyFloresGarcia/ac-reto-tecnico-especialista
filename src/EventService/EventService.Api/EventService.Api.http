@@ -1,0 +1,31 @@
+@EventService.Api_HostAddress = http://localhost:8080
+@adminToken = PEGAR_AQUI_UN_TOKEN_ADMIN_GENERADO_CON_tools/generate-demo-token
+
+GET {{EventService.Api_HostAddress}}/health/live
+
+###
+
+GET {{EventService.Api_HostAddress}}/health/ready
+
+###
+
+GET {{EventService.Api_HostAddress}}/events
+Authorization: Bearer {{adminToken}}
+
+###
+
+POST {{EventService.Api_HostAddress}}/events
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Concierto Rock en el Parque",
+  "date": "2026-12-01T20:00:00Z",
+  "location": "Estadio Nacional, Lima",
+  "zones": [
+    { "name": "General", "price": 50.00, "capacity": 500 },
+    { "name": "VIP", "price": 150.00, "capacity": 100 }
+  ]
+}
+
+###

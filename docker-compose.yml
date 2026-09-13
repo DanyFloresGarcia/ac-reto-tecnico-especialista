@@ -1,0 +1,125 @@
+services:
+  postgres-event:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${EVENTDB_NAME:-eventdb}
+      POSTGRES_USER: ${EVENTDB_USER:-eventservice}
+      POSTGRES_PASSWORD: ${EVENTDB_PASSWORD:-eventservice_pw}
+    ports:
+      - "${EVENTDB_PORT:-5432}:5432"
+    volumes:
+      - postgres-event-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${EVENTDB_USER:-eventservice} -d ${EVENTDB_NAME:-eventdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-notification:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${NOTIFICATIONDB_NAME:-notificationdb}
+      POSTGRES_USER: ${NOTIFICATIONDB_USER:-notificationservice}
+      POSTGRES_PASSWORD: ${NOTIFICATIONDB_PASSWORD:-notificationservice_pw}
+    ports:
+      - "${NOTIFICATIONDB_PORT:-5433}:5432"
+    volumes:
+      - postgres-notification-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIFICATIONDB_USER:-notificationservice} -d ${NOTIFICATIONDB_NAME:-notificationdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api-event:
+    build:
+      context: ./src/EventService
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      ConnectionStrings__EventDb: "Host=postgres-event;Port=5432;Database=${EVENTDB_NAME:-eventdb};Username=${EVENTDB_USER:-eventservice};Password=${EVENTDB_PASSWORD:-eventservice_pw}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Username: ${RABBITMQ_USER:-guest}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD:-guest}
+      Redis__ConnectionString: "redis:6379"
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      Cors__FrontendOrigin: ${FRONTEND_ORIGIN:-http://localhost:5173}
+    ports:
+      - "${EVENT_API_PORT:-8080}:8080"
+    depends_on:
+      postgres-event:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api-notifications:
+    build:
+      context: ./src/NotificationService
+      dockerfile: Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      ConnectionStrings__NotificationDb: "Host=postgres-notification;Port=5432;Database=${NOTIFICATIONDB_NAME:-notificationdb};Username=${NOTIFICATIONDB_USER:-notificationservice};Password=${NOTIFICATIONDB_PASSWORD:-notificationservice_pw}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Username: ${RABBITMQ_USER:-guest}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${NOTIFICATION_API_PORT:-8081}:8080"
+    depends_on:
+      postgres-notification:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./src/Frontend
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_EVENT_URL: ${VITE_API_EVENT_URL:-http://localhost:8080}
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      api-event:
+        condition: service_healthy
+
+volumes:
+  postgres-event-data:
+  postgres-notification-data:

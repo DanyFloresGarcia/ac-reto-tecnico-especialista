@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -u guest:guest -X POST http://localhost:15672/api/exchanges/%2F/EventCreated/publish -H 'Content-Type: application/json' -d @publish_body.json)",
+      "Bash(python3 -c \"import json,sys; print\\('messages:', json.load\\(sys.stdin\\)['messages']\\)\")",
+      "Bash(python3 -c \"import json; json.load\\(open\\('/c/Dany/AtlanticCity/reto-tecnico-lt/ac-reto-tecnico-lt/postman/PlataformaEventos.postman_collection.json'\\)\\); json.load\\(open\\('/c/Dany/AtlanticCity/reto-tecnico-lt/ac-reto-tecnico-lt/postman/PlataformaEventos.postman_environment.json'\\)\\); print\\('OK, ambos JSON válidos'\\)\")",
+      "Bash(npx --yes newman --version)",
+      "Bash(npx --yes newman run postman/PlataformaEventos.postman_collection.json -e /c/Users/Dany/AppData/Local/Temp/claude/c--Dany-AtlanticCity-reto-tecnico-lt-ac-reto-tecnico-lt/dfd2bf36-535b-4a04-b110-c2818cb8edc4/scratchpad/env-with-tokens.json)",
+      "Bash(cd \"/c/Dany/AtlanticCity/reto-tecnico-lt/ac-reto-tecnico-lt\" && \\\\ *)",
+      "Read(//c/Users/Dany/Downloads/**)",
+      "Read(//c/Users/Dany/Desktop/**)"
+    ]
+  }
+}

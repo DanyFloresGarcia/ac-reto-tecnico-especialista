@@ -38,6 +38,12 @@ artifacts/packages/
 !.env.example
 *.local.json
 
+# Node / React (Frontend)
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+
 # Operating system files
 .DS_Store
 Thumbs.db

@@ -1,0 +1,25 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/EventService/">
+    <Project Path="src/EventService/EventService.Api/EventService.Api.csproj" />
+    <Project Path="src/EventService/EventService.Application/EventService.Application.csproj" />
+    <Project Path="src/EventService/EventService.Domain/EventService.Domain.csproj" />
+    <Project Path="src/EventService/EventService.Infrastructure/EventService.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/NotificationService/">
+    <Project Path="src/NotificationService/NotificationService.Application/NotificationService.Application.csproj" />
+    <Project Path="src/NotificationService/NotificationService.Domain/NotificationService.Domain.csproj" />
+    <Project Path="src/NotificationService/NotificationService.Infrastructure/NotificationService.Infrastructure.csproj" />
+    <Project Path="src/NotificationService/NotificationService.Worker/NotificationService.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EventService.Api.IntegrationTests/EventService.Api.IntegrationTests.csproj" />
+    <Project Path="tests/EventService.Application.Tests/EventService.Application.Tests.csproj" />
+    <Project Path="tests/EventService.Domain.Tests/EventService.Domain.Tests.csproj" />
+    <Project Path="tests/NotificationService.Application.Tests/NotificationService.Application.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/" />
+  <Folder Name="/tools/generate-demo-token/">
+    <Project Path="tools/generate-demo-token/GenerateDemoToken.csproj" />
+  </Folder>
+</Solution>
