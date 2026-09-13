@@ -31,7 +31,7 @@ openssl rand -base64 32
 ## 3. Levantar todo
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 Vas a ver `postgres-event`, `postgres-notification`, `rabbitmq`, `redis`, `api-event` y `api-notifications` reportarse `healthy` en orden (cada uno espera a sus dependencias reales, no a un timer fijo). El `frontend` arranca al final.
@@ -55,14 +55,38 @@ dotnet ef database update --project src/NotificationService/NotificationService.
 
 ## 5. Token JWT de demo
 
-Este MVP no tiene login real (Fase 1 — ver Constitución §5.1): se usa un JWT firmado offline con el mismo `Jwt__SigningKey` de tu `.env`. Generalo así:
+Este MVP no tiene login real (Fase 1 — ver Constitución §5.1): no hay usuario/contraseña ni IdP. En su lugar, un JWT se firma "offline" (con una herramienta de línea de comandos) usando la misma clave secreta que valida `EventService`, y ese JWT se manda como header `Authorization: Bearer <token>` en cada request.
+
+**`<tu-JWT_SIGNING_KEY>` no es un JWT ni algo que se busca en internet**: es el valor de texto que vos mismo pusiste en la variable `JWT_SIGNING_KEY` de tu `.env` (paso 2). El comando toma esa clave y con ella genera un JWT nuevo, firmado, listo para usar.
+
+Ejecutá esto en una terminal normal de tu máquina (no dentro de Docker — necesitás el .NET SDK local), parado en la raíz del repo:
 
 ```bash
 dotnet run --project tools/generate-demo-token -- Admin "<tu-JWT_SIGNING_KEY>"
 dotnet run --project tools/generate-demo-token -- User  "<tu-JWT_SIGNING_KEY>"
 ```
 
-El Frontend trae un token `Admin` hardcodeado en [`src/Frontend/src/config.ts`](src/Frontend/src/config.ts) firmado con el secreto placeholder de `.env.example`. **Si cambiaste `JWT_SIGNING_KEY`, regenerá ese token** con el comando de arriba y reemplazá la constante `ADMIN_DEMO_TOKEN` en ese archivo.
+Ejemplo real (con una clave cualquiera de 32+ bytes):
+
+```bash
+dotnet run --project tools/generate-demo-token -- Admin "qnm268A8KXb/dzmpfCoYV5v5QcquACo5TlFp7ZSHbDk="
+```
+
+Cada comando imprime **una sola línea** en la consola (algo como `eyJhbGciOiJIUzI1NiIs...`) — ese texto completo es el JWT. Copialo tal cual; lo vas a necesitar en el paso 7 (`ADMIN_TOKEN=`) y/o en Postman. El token expira a las 24 horas, así que si pasa ese tiempo hay que volver a generarlo.
+
+### ¿Cuándo hace falta tocar el Frontend?
+
+El Frontend toma su token `Admin` de la variable de entorno **`VITE_ADMIN_TOKEN`** (en tu `.env` de la raíz), no de código. `.env.example` ya trae un valor por defecto firmado con el `JWT_SIGNING_KEY` placeholder.
+
+- **Si dejaste `JWT_SIGNING_KEY` igual al placeholder de `.env.example`**: no tenés que hacer nada, el `VITE_ADMIN_TOKEN` de ejemplo ya es válido.
+- **Si cambiaste `JWT_SIGNING_KEY`** por un valor propio (recomendado): el `VITE_ADMIN_TOKEN` que trae `.env.example` queda inválido (la API lo va a rechazar con 401) y tenés que:
+  1. Generar un token `Admin` nuevo con el comando de arriba, usando tu `JWT_SIGNING_KEY` real.
+  2. Pegar el resultado en `VITE_ADMIN_TOKEN` dentro de tu `.env`.
+  3. Recrear el contenedor del Frontend para que tome el env var nuevo — no hace falta `--build` (el código no cambió): `docker compose up -d frontend`.
+
+El token `User` **no lo usa el Frontend** — no tiene ningún selector de rol, solo actúa como Admin. Generalo aparte, solo para probar por Postman/curl los casos 403 (ver [quickstart.md](specs/001-core-mvp-events-platform/quickstart.md)).
+
+El token `User` no está hardcodeado en ningún lado — generalo solo si vas a probar manualmente los casos de autorización 403 (por Postman/curl).
 
 ## 6. URLs de acceso
 
@@ -86,7 +110,7 @@ curl -X POST http://localhost:8080/events \
 curl http://localhost:8080/events -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Revisá `docker compose logs api-notifications` para ver el correo simulado (nunca se envía por SMTP real) y la fila insertada en `AuditLog`. Ver [`specs/001-core-mvp-events-platform/quickstart.md`](specs/001-core-mvp-events-platform/quickstart.md) para el recorrido completo (idempotencia, resiliencia/DLQ, matriz de roles).
+Revisá `docker compose logs api-notifications` para ver el correo (simulado por defecto; real si configuraste `SMTP_*` en `.env` — ver [`specs/001-core-mvp-events-platform/research.md`](specs/001-core-mvp-events-platform/research.md) §8b) y la fila insertada en `AuditLog`. Ver [`specs/001-core-mvp-events-platform/quickstart.md`](specs/001-core-mvp-events-platform/quickstart.md) para el recorrido completo (idempotencia, resiliencia/DLQ, matriz de roles), o [`specs/001-core-mvp-events-platform/manual-validation-checklist.md`](specs/001-core-mvp-events-platform/manual-validation-checklist.md) para una checklist de validación organizada por atributo de calidad (desacoplamiento, mensajería, consistencia, resiliencia, reintentos/idempotencia, caché, IdP, observabilidad).
 
 ### Collection de Postman
 
@@ -113,8 +137,9 @@ npm run test
 - **Un contenedor no llega a `healthy`**: `docker compose logs <servicio>` para ver el motivo exacto. Los health checks tienen `retries` generosos, pero si Postgres/RabbitMQ tardan mucho en un equipo lento, subí `retries`/`start_period` en `docker-compose.yml`.
 - **Puerto ya en uso**: cambiá el puerto correspondiente (`EVENT_API_PORT`, `NOTIFICATION_API_PORT`, `FRONTEND_PORT`, `EVENTDB_PORT`, `NOTIFICATIONDB_PORT`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`, `REDIS_PORT`) en tu `.env`.
 - **`api-event` no arranca / error de `Jwt:SigningKey`**: `JWT_SIGNING_KEY` en `.env` está vacío o tiene menos de 32 bytes — es un fallo intencional (spec FR-022), no un bug.
-- **El Frontend no puede llamar a la API**: confirmá que `VITE_API_EVENT_URL` (en `.env` o `src/Frontend/.env`) apunta al puerto real de `api-event`, y que el token en `config.ts` sigue siendo válido para el `JWT_SIGNING_KEY` actual (ver paso 5).
+- **El Frontend no puede llamar a la API**: confirmá que `VITE_API_EVENT_URL` (en `.env` o `src/Frontend/.env`) apunta al puerto real de `api-event`, y que `VITE_ADMIN_TOKEN` sigue siendo válido para el `JWT_SIGNING_KEY` actual (ver paso 5).
 - **Volumen de datos de una corrida anterior con permisos/errores raros**: `docker compose down -v` borra los volúmenes y arranca todo desde cero.
+- **Quiero ver/limpiar los datos directamente en Postgres sin borrar los volúmenes**: ver [`specs/001-core-mvp-events-platform/quickstart.md`](specs/001-core-mvp-events-platform/quickstart.md#10-consultas-sql-útiles-inspección-y-reset-de-datos) — consultas SQL listas para inspeccionar `Events`/`Zones` o resetearlas con `TRUNCATE`.
 
 ## 10. Estructura del repo
 

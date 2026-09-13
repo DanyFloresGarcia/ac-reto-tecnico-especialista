@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_API_EVENT_URL: string;
+  readonly VITE_ADMIN_TOKEN: string;
 }
 
 interface ImportMeta {

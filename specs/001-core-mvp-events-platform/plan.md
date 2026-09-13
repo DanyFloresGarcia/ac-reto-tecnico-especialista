@@ -50,6 +50,7 @@ Construir el MVP de la Plataforma de Eventos: un `EventService` (.NET 10) que pe
 | §7.3 Una base de datos independiente por servicio | `eventdb` y `notificationdb`, cada una en su propio contenedor Postgres | PASS |
 | §7.4 CORS explícito (allow-list, sin `AllowAnyOrigin`) | Política CORS limitada a `http://localhost:5173` | PASS |
 | §7.5 DDD táctico básico / SOLID / patrones justificados, sin sobre-ingeniería | `Event` como Aggregate Root vía factory method; `AuditLog` modelado como entidad simple a propósito; patrones limitados a los de la tabla de la Constitución | PASS |
+| §4 Prohibido hardcodear secretos reales (regla agregada tras el arranque de este plan) | `JWT_SIGNING_KEY` solo vive en `.env`/env vars, nunca en `appsettings.json` ni en código; el JWT de demo del Frontend se lee de `VITE_ADMIN_TOKEN` (env var), no de un literal en `config.ts`; las credenciales de Postgres/RabbitMQ en `appsettings.json` son intencionalmente credenciales de infra local-only (no secretos reales bajo el criterio de la Constitución) | PASS |
 
 **Resultado**: Sin violaciones. No se requiere la sección de Complexity Tracking.
 

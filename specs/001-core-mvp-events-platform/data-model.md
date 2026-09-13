@@ -33,9 +33,11 @@
 |---|---|---|
 | `Id` | `Guid` | Generado al crear |
 | `EventId` | `Guid` | FK a `Event`, **indexada** (soporta la carga de zonas por evento vía `GetEventByIdQuery`); nunca se expone para creación/edición independiente |
-| `Name` | `string` | Requerido |
+| `Name` | `string` | Requerido, máx. 100 caracteres |
 | `Price` | `decimal(10,2)` | `>= 0`; precisión y escala fijas a nivel de columna para evitar ambigüedad de redondeo entre dominio y persistencia |
 | `Capacity` | `int` | `> 0` |
+
+**Límite de longitud de `Zone.Name` (cierre de punto diferido en `/speckit-clarify`)**: se fija en 100 caracteres — la mitad del límite de `Event.Name` (200), ya que un nombre de zona ("General", "VIP", "Platea Baja") es estructuralmente más corto que el nombre de un evento. Mantiene el mismo criterio ya aplicado a `Event.Name`/`Event.Location`: un máximo explícito evita valores de longitud arbitraria sin necesidad de una regla de negocio más compleja.
 
 **Integridad referencial**: `Zone.EventId` usa `ON DELETE CASCADE` hacia `Event` — aunque este MVP no expone un endpoint de eliminación, se fija esta regla ahora para que el esquema no quede en un estado ambiguo (huérfanos) si una fase futura la agrega.
 

@@ -84,8 +84,48 @@ curl -i -X POST http://localhost:<puerto>/events -H "Authorization: Bearer $ADMI
 
 ## 8. Frontend
 
+Prerrequisito: si `JWT_SIGNING_KEY` en `.env` es distinto del placeholder de `.env.example`, `VITE_ADMIN_TOKEN` debe contener un token `Admin` generado con esa misma clave (paso 2) — de lo contrario el Frontend recibirá `401` al crear el evento. Ver README §5 para el detalle completo.
+
 Abrir `http://localhost:5173`, completar el formulario "Registrar Evento" (agregar al menos una zona) y guardar. Verificar: validaciones inline si se deja un campo vacío o una zona con capacidad 0; estado de carga mientras se envía; el evento creado aparece luego en `GET /events`.
 
 ## 9. Arranque limpio — Historia 5
 
 Repetir el paso 1 en una máquina distinta (o tras `docker compose down -v` para limpiar volúmenes) siguiendo únicamente el README, sin ningún paso adicional no documentado (SC-008 y SC-009 del spec).
+
+## 10. Consultas SQL útiles (inspección y reset de datos)
+
+Conectarse a `eventdb` sin instalar `psql` localmente (usa el cliente ya incluido en el contenedor de Postgres):
+
+```bash
+docker compose exec postgres-event psql -U eventservice -d eventdb
+```
+
+Inspeccionar todos los eventos con sus zonas:
+
+```sql
+SELECT
+    e."Name" AS "Evento",
+    e."Location" AS "Localidad",
+    z."Name" AS "Zona",
+    z."Price" AS "Precio",
+    z."Capacity" AS "Capacidad"
+FROM public."Zones" z
+INNER JOIN public."Events" e ON e."Id" = z."EventId"
+ORDER BY "Evento" DESC, "Capacidad" DESC;
+```
+
+Reiniciar los datos (borra todos los eventos y zonas; no toca las tablas de Outbox/Inbox de MassTransit):
+
+```sql
+TRUNCATE TABLE public."Zones";
+TRUNCATE TABLE public."Events" CASCADE;
+```
+
+Verificar que quedó vacío:
+
+```sql
+SELECT * FROM public."Events";
+SELECT * FROM public."Zones";
+```
+
+**Nota**: tras truncar, `EventService` solo vuelve a sembrar el evento de ejemplo (FR-020) en su **próximo arranque** — si lo necesitás de inmediato: `docker compose restart api-event`.
