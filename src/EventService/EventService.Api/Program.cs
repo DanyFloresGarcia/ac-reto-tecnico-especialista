@@ -1,6 +1,7 @@
 using System.Text;
 using System.Threading.RateLimiting;
 using EventService.Api.Middleware;
+using EventService.Api.Observability;
 using EventService.Api.Security;
 using EventService.Application.Behaviors;
 using EventContracts;
@@ -15,17 +16,22 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Serilog.Formatting.Compact;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseSerilog((context, services, loggerConfiguration) => loggerConfiguration
     .Enrich.FromLogContext()
+    .Enrich.WithSpan()
     .Enrich.WithProperty("service", "EventService")
     .MinimumLevel.Information()
     .WriteTo.Console(new RenderedCompactJsonFormatter()));
+
+builder.AddObservability();
 
 // FR-022 / research.md §4b: fail fast if the JWT signing key is missing or too short.
 // Reads `configuration` lazily (never captured eagerly) so it always sees the final,
@@ -82,10 +88,16 @@ builder.Services.AddDbContext<EventDbContext>(options =>
 builder.Services.AddScoped<IUnitOfWork>(sp => sp.GetRequiredService<EventDbContext>());
 builder.Services.AddScoped<IEventRepository, EventRepository>();
 builder.Services.AddScoped<IEventCacheService, RedisEventCacheService>();
-builder.Services.AddStackExchangeRedisCache(options =>
-{
-    options.Configuration = builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379";
-});
+
+// research.md §4: un único IConnectionMultiplexer compartido entre IDistributedCache (abajo) y
+// OpenTelemetry.Instrumentation.StackExchangeRedis (Observability/ObservabilityExtensions.cs),
+// para que los comandos de Cache-Aside queden como spans hijos del span HTTP.
+builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+    ConnectionMultiplexer.Connect(builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379"));
+builder.Services.AddStackExchangeRedisCache(_ => { });
+builder.Services.AddOptions<RedisCacheOptions>()
+    .Configure<IConnectionMultiplexer>((options, connectionMultiplexer) =>
+        options.ConnectionMultiplexerFactory = () => Task.FromResult(connectionMultiplexer));
 
 var applicationAssembly = typeof(ValidationBehavior<,>).Assembly;
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(applicationAssembly));
@@ -234,6 +246,9 @@ app.MapControllers();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
+
+// research.md §1: scraping *pull* de Prometheus — no bloquea el request path (SC-006).
+app.MapPrometheusScrapingEndpoint("/metrics");
 
 app.Run();
 

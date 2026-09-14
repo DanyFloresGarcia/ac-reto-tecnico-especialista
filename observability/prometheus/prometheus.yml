@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # EventService.Api expone /metrics vía OpenTelemetry.Exporter.Prometheus.AspNetCore (research.md §1).
+  # El label service_name se fija acá (scrape-time), no se depende de que el exportador de OTel
+  # convierta el resource attribute service.name en un label de cada serie (research.md/contracts
+  # alerting-rules.md asumen service_name="EventService"/"NotificationService" en toda query).
+  - job_name: event-service
+    static_configs:
+      - targets: ["api-event:8080"]
+        labels:
+          service_name: EventService
+
+  - job_name: notification-service
+    static_configs:
+      - targets: ["api-notifications:8080"]
+        labels:
+          service_name: NotificationService

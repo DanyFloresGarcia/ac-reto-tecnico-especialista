@@ -68,6 +68,7 @@ services:
       Redis__ConnectionString: "redis:6379"
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
       Cors__FrontendOrigin: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      Otel__ExporterEndpoint: http://tempo:4317
     ports:
       - "${EVENT_API_PORT:-8080}:8080"
     depends_on:
@@ -101,6 +102,7 @@ services:
       Smtp__FromAddress: ${SMTP_FROM_ADDRESS:-no-reply@plataforma-eventos.local}
       Smtp__FromName: ${SMTP_FROM_NAME:-Plataforma de Eventos}
       Smtp__ToAddress: ${SMTP_TO_ADDRESS:-demo@plataforma-eventos.local}
+      Otel__ExporterEndpoint: http://tempo:4317
     ports:
       - "${NOTIFICATION_API_PORT:-8081}:8080"
     depends_on:
@@ -128,6 +130,62 @@ services:
       api-event:
         condition: service_healthy
 
+  # --- Observabilidad (Spec 02) — todas de mejor esfuerzo: api-event/api-notifications NUNCA
+  # dependen de que estos contenedores estén sanos (FR-016), por eso no llevan depends_on hacia
+  # ellos ni condition: service_healthy acá.
+  tempo:
+    image: grafana/tempo:latest
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:latest
+    command: ["-config.file=/etc/promtail/promtail-config.yaml"]
+    volumes:
+      - ./observability/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+
 volumes:
   postgres-event-data:
   postgres-notification-data:
+  tempo-data:
+  loki-data:
+  prometheus-data:
+  grafana-data:

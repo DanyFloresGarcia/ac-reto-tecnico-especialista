@@ -20,7 +20,27 @@
       "Bash(grep -E \"^\\\\.env$\")",
       "Bash(echo \"exit code: $?\")",
       "Bash(grep -i \"appsettings.json$\")",
-      "Bash(dotnet build *)"
+      "Bash(dotnet build *)",
+      "Bash(cd \"c:\\\\Dany\\\\AtlanticCity\\\\reto-tecnico-lt\\\\ac-reto-tecnico-especialista\" && mkdir -p specs/002-observabilidad-grafana-tempo-loki/checklists && cat .specify/feature.json 2>/dev/null; echo \"---branch---\"; git branch --show-current)",
+      "Bash(rmdir specs/002-observabilidad-grafana-tempo-loki/checklists)",
+      "Bash(rmdir specs/002-observabilidad-grafana-tempo-loki)",
+      "Bash(mkdir -p specs/002-add-observability-stack/checklists)",
+      "Bash(pwsh -NoProfile -Command \".specify/scripts/powershell/check-prerequisites.ps1 -Json -PathsOnly\")",
+      "Bash(powershell -NoProfile -Command \".specify/scripts/powershell/check-prerequisites.ps1 -Json -PathsOnly\")",
+      "Bash(.specify/scripts/powershell/setup-plan.ps1 -Json)",
+      "Bash(powershell -NoProfile -Command \".specify/scripts/powershell/setup-plan.ps1 -Json\")",
+      "Bash(powershell -NoProfile -Command \".specify/scripts/powershell/setup-tasks.ps1 -Json\")",
+      "Bash(powershell -NoProfile -Command \".specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireSpec -RequireTasks -IncludeTasks\")",
+      "Bash(powershell -NoProfile -Command \".specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireTasks -IncludeTasks\")",
+      "Bash(dotnet --version)",
+      "Bash(timeout 60 dotnet add package OpenTelemetry.Extensions.Hosting --version 1.11.2)",
+      "Bash(dotnet remove *)",
+      "Bash(curl -s \"https://api.nuget.org/v3-flatcontainer/opentelemetry/index.json\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d['versions'][-8:]\\)\")",
+      "Bash(dotnet add *)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/open-telemetry/opentelemetry-dotnet-contrib/main/src/OpenTelemetry.Instrumentation.StackExchangeRedis/README.md\")",
+      "Read(//c/Users/**)",
+      "Read(//c/Users/Dany/.nuget/**)"
     ]
   }
 }

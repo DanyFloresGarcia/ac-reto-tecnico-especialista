@@ -8,6 +8,7 @@ using NotificationService.Application.Repositories;
 using NotificationService.Infrastructure;
 using NotificationService.Infrastructure.Notifications;
 using NotificationService.Infrastructure.Persistence;
+using NotificationService.Worker.Observability;
 using Serilog;
 using Serilog.Formatting.Compact;
 
@@ -15,9 +16,12 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseSerilog((context, services, loggerConfiguration) => loggerConfiguration
     .Enrich.FromLogContext()
+    .Enrich.WithSpan()
     .Enrich.WithProperty("service", "NotificationService")
     .MinimumLevel.Information()
     .WriteTo.Console(new RenderedCompactJsonFormatter()));
+
+builder.AddObservability();
 
 builder.Services.AddDbContext<NotificationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("NotificationDb")));
@@ -67,6 +71,9 @@ using (var scope = app.Services.CreateScope())
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") });
+
+// research.md §1: scraping *pull* de Prometheus — no bloquea el procesamiento de mensajes (SC-006).
+app.MapPrometheusScrapingEndpoint("/metrics");
 
 app.Run();
 
